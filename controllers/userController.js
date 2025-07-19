@@ -85,7 +85,7 @@ exports.signUser = asyncHandler(async (req, res, next) => {
   }
 
   // 2. Check for user (explicitly select password)
-  const user = await User.findOne({ email });
+  const user = await User.findOne({ email }).select("+password");
 
   if (!user) {
     return res
