@@ -10,6 +10,7 @@
     "mongoose": "^8.16.4",
     "morgan": "^1.10.1",
     "multer": "^2.0.2",
+    "pdf-parse": "^1.1.1",
     "uuid": "^11.1.0"
   },
   "name": "b2bgeoragapi",
@@ -17,7 +18,8 @@
   "description": "My teams project for the National AI Hackathon",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "dev": "nodemon index.js"
   },
   "repository": {
     "type": "git",
