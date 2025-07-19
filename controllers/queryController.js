@@ -1,0 +1,1 @@
+exports.sendPrompt = (req, res) => {};
