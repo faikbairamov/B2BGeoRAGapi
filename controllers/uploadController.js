@@ -18,10 +18,20 @@ const EMBEDDING_MODEL_NAME = "Xenova/bge-m3";
 const EMBEDDING_DIMENSION = 1024;
 const SIMILARITY_METRIC = "cosine";
 
-// Semantic Chunking Configuration
-const CHUNK_SIZE = 1000; // Target chunk size in characters
-const CHUNK_OVERLAP = 200; // Overlap between chunks for context preservation
-const SEPARATORS = ['\n\n', '\n', '.', '!', '?', ';', ':', ' ', '']; // Priority order for splitting
+// Semantic Chunking Configuration - Optimized for extracted text
+const CHUNK_SIZE = 800; // Slightly smaller for better sentence completion
+const CHUNK_OVERLAP = 150; // Reduced overlap to avoid too much repetition
+const SEPARATORS = [
+  "\n\n",    // Double newlines (paragraphs) - highest priority
+  "\n",      // Single newlines
+  ". ",      // Sentence endings with space
+  "! ",      // Exclamations with space  
+  "? ",      // Questions with space
+  "; ",      // Semicolons with space
+  ", ",      // Commas with space (be more selective)
+  " ",       // Spaces
+  ""         // Character level as last resort
+];
 
 // Initialize Pinecone client
 const pineconeClient = new Pinecone({
@@ -59,47 +69,77 @@ async function ensurePineconeIndexExists() {
   }
 }
 
-async function createSemanticChunks(textContent, filename) {
+async function createSemanticChunks(textContent) {
   console.log(`✂️ Creating semantic chunks using LangChain RecursiveCharacterTextSplitter...`);
-  console.log(`📊 Chunk size: ${CHUNK_SIZE}, Overlap: ${CHUNK_OVERLAP}`);
+  console.log(`📊 Target chunk size: ${CHUNK_SIZE} characters with ${CHUNK_OVERLAP} overlap`);
 
   // Initialize the semantic text splitter
   const textSplitter = new RecursiveCharacterTextSplitter({
     chunkSize: CHUNK_SIZE,
     chunkOverlap: CHUNK_OVERLAP,
     separators: SEPARATORS,
-    keepSeparator: true, // Keep separators to maintain context
-    lengthFunction: (text) => text.length, // Use character count as length function
+    lengthFunction: (text) => text.length,
   });
 
   try {
     // Split the text into semantic chunks
-    const textChunks = await textSplitter.splitText(textContent);
+    const documents = await textSplitter.createDocuments([textContent]);
     
-    // Transform into our expected format with metadata
-    const formattedChunks = textChunks.map((chunkText, index) => {
-      const startPosition = index === 0 ? 0 : 
-        textContent.indexOf(chunkText, index > 0 ? textContent.indexOf(textChunks[index - 1]) + textChunks[index - 1].length : 0);
+    // Convert LangChain documents to our chunk format with quality validation
+    const textChunks = documents.map((doc, index) => {
+      const chunkText = doc.pageContent;
+      const wordCount = chunkText.split(/\s+/).filter(word => word.length > 0).length;
+      
+      // Calculate quality metrics
+      const punctuationRatio = (chunkText.match(/[.,!?;]/g) || []).length / chunkText.length;
+      const avgWordLength = chunkText.replace(/[^\w\s]/g, '').split(/\s+/).reduce((sum, word) => sum + word.length, 0) / wordCount;
+      const endsWithCompleteWord = /\w$/.test(chunkText.trim());
       
       return {
         id: uuidv4(),
-        text: chunkText.trim(),
-        wordCount: chunkText.trim().split(/\s+/).length,
-        charCount: chunkText.trim().length,
-        startPosition: startPosition >= 0 ? startPosition : index * CHUNK_SIZE, // Fallback if indexOf fails
+        text: chunkText,
+        wordCount: wordCount,
+        charCount: chunkText.length,
         chunkIndex: index,
-        filename: filename,
-        chunkType: 'semantic', // Mark as semantic chunk
+        quality: {
+          punctuationRatio: Math.round(punctuationRatio * 1000) / 1000,
+          avgWordLength: Math.round(avgWordLength * 10) / 10,
+          endsWithCompleteWord: endsWithCompleteWord,
+          qualityScore: endsWithCompleteWord ? (avgWordLength > 2 ? 'good' : 'fair') : 'poor'
+        },
+        metadata: doc.metadata || {}
       };
     });
 
-    console.log(`✅ Created ${formattedChunks.length} semantic chunks`);
-    console.log(`📈 Average chunk size: ${Math.round(formattedChunks.reduce((sum, chunk) => sum + chunk.charCount, 0) / formattedChunks.length)} characters`);
-    console.log(`📏 Chunk size range: ${Math.min(...formattedChunks.map(c => c.charCount))} - ${Math.max(...formattedChunks.map(c => c.charCount))} characters`);
+    // Filter out very poor quality chunks
+    const filteredChunks = textChunks.filter(chunk => {
+      if (chunk.wordCount < 5 || chunk.quality.punctuationRatio > 0.3) {
+        console.warn(`⚠️ Removing poor quality chunk: "${chunk.text.substring(0, 50)}..."`);
+        return false;
+      }
+      return true;
+    });
+
+    console.log(`✅ Created ${filteredChunks.length} semantic chunks (filtered out ${textChunks.length - filteredChunks.length} poor quality chunks)`);
+    console.log(`📈 Average chunk size: ${Math.round(filteredChunks.reduce((sum, chunk) => sum + chunk.charCount, 0) / filteredChunks.length)} characters`);
+    console.log(`📈 Average words per chunk: ${Math.round(filteredChunks.reduce((sum, chunk) => sum + chunk.wordCount, 0) / filteredChunks.length)} words`);
     
-    return formattedChunks;
+    // Log quality distribution
+    const qualityCount = filteredChunks.reduce((acc, chunk) => {
+      acc[chunk.quality.qualityScore] = (acc[chunk.quality.qualityScore] || 0) + 1;
+      return acc;
+    }, {});
+    console.log(`📊 Quality distribution:`, qualityCount);
+    
+    // Log chunk size distribution for analysis
+    const chunkSizes = filteredChunks.map(chunk => chunk.charCount);
+    const minSize = Math.min(...chunkSizes);
+    const maxSize = Math.max(...chunkSizes);
+    console.log(`📏 Chunk size range: ${minSize} - ${maxSize} characters`);
+
+    return filteredChunks;
   } catch (error) {
-    console.error(`❌ Error creating semantic chunks:`, error);
+    console.error('❌ Error creating semantic chunks:', error);
     throw new Error(`Semantic chunking failed: ${error.message}`);
   }
 }
@@ -131,12 +171,41 @@ async function generateEmbeddingsForChunks(textChunks) {
       embeddingVectors.push(embeddingOutput.data);
     } catch (error) {
       console.error(`❌ Error generating embedding for chunk ${chunkIndex + 1}:`, error);
-      throw new Error(`Embedding generation failed at chunk ${chunkIndex + 1}: ${error.message}`);
+      throw new Error(`Embedding generation failed for chunk ${chunkIndex + 1}: ${error.message}`);
     }
   }
 
   console.log(`✅ Generated ${embeddingVectors.length} embedding vectors`);
   return embeddingVectors;
+}
+
+// Helper function to sanitize metadata for Pinecone
+function sanitizeMetadata(metadata) {
+  const sanitized = {};
+  
+  for (const [key, value] of Object.entries(metadata)) {
+    if (value === null || value === undefined) {
+      continue; // Skip null/undefined values
+    }
+    
+    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+      sanitized[key] = value;
+    } else if (Array.isArray(value) && value.every(item => typeof item === 'string')) {
+      sanitized[key] = value; // Array of strings is allowed
+    } else if (typeof value === 'object') {
+      // Convert complex objects to JSON strings
+      try {
+        sanitized[`${key}_json`] = JSON.stringify(value);
+      } catch (error) {
+        console.warn(`⚠️ Could not serialize metadata field '${key}':`, error);
+      }
+    } else {
+      // Convert other types to strings
+      sanitized[key] = String(value);
+    }
+  }
+  
+  return sanitized;
 }
 
 async function uploadChunksToPinecone(textChunks, embeddingVectors, userId, filename) {
@@ -148,6 +217,9 @@ async function uploadChunksToPinecone(textChunks, embeddingVectors, userId, file
     const currentChunk = textChunks[chunkIndex];
     const currentEmbedding = embeddingVectors[chunkIndex];
     
+    // Sanitize LangChain metadata for Pinecone compatibility
+    const sanitizedLangChainMetadata = sanitizeMetadata(currentChunk.metadata || {});
+    
     vectorsToUpload.push({
       id: currentChunk.id,
       values: Array.from(currentEmbedding),
@@ -157,14 +229,9 @@ async function uploadChunksToPinecone(textChunks, embeddingVectors, userId, file
         text: currentChunk.text,
         wordCount: currentChunk.wordCount,
         charCount: currentChunk.charCount,
-        startPosition: currentChunk.startPosition,
         chunkIndex: currentChunk.chunkIndex,
         chunkId: currentChunk.id,
-        chunkType: currentChunk.chunkType,
-        uploadedAt: new Date().toISOString(),
-        // Additional semantic chunking metadata
-        chunkSize: CHUNK_SIZE,
-        chunkOverlap: CHUNK_OVERLAP,
+        ...sanitizedLangChainMetadata,
       },
     });
   }
@@ -185,51 +252,7 @@ async function uploadChunksToPinecone(textChunks, embeddingVectors, userId, file
     }
   }
   
-  console.log(`🎉 Successfully uploaded all ${vectorsToUpload.length} vectors to Pinecone`);
-}
-
-// ===== SEARCH FUNCTION =====
-
-async function semanticSearch(query, userId, topK = 5) {
-  console.log(`🔍 Performing semantic search for query: "${query}"`);
-  
-  try {
-    // Generate embedding for the query
-    console.log(`🧠 Generating embedding for search query...`);
-    const embeddingPipeline = await pipeline("feature-extraction", EMBEDDING_MODEL_NAME);
-    const queryEmbeddingOutput = await embeddingPipeline(query, {
-      pooling: "cls",
-      normalize: true,
-    });
-    const queryEmbedding = Array.from(queryEmbeddingOutput.data);
-
-    // Search in Pinecone
-    const pineconeIndex = pineconeClient.Index(PINECONE_INDEX_NAME);
-    const searchResults = await pineconeIndex.query({
-      vector: queryEmbedding,
-      topK: topK,
-      filter: { userId: userId }, // Filter by user
-      includeMetadata: true,
-      includeValues: false,
-    });
-
-    console.log(`✅ Found ${searchResults.matches.length} relevant chunks`);
-    
-    return searchResults.matches.map(match => ({
-      id: match.id,
-      score: match.score,
-      text: match.metadata.text,
-      filename: match.metadata.filename,
-      chunkIndex: match.metadata.chunkIndex,
-      wordCount: match.metadata.wordCount,
-      charCount: match.metadata.charCount,
-      chunkType: match.metadata.chunkType,
-    }));
-    
-  } catch (error) {
-    console.error(`❌ Error performing semantic search:`, error);
-    throw new Error(`Semantic search failed: ${error.message}`);
-  }
+  console.log(`🎉 Successfully uploaded all ${vectorsToUpload.length} semantic chunks to Pinecone`);
 }
 
 // ===== MAIN CONTROLLER =====
@@ -248,68 +271,128 @@ exports.uploadFiles = async (req, res) => {
     
     const results = [];
     const userId = req.user?._id.toString() || "default_user"; 
-    console.log(`👤 Processing files for user: ${userId}`);
+    console.log(`👤 Processing for user: ${userId}`);
 
     // Step 2: Process each uploaded PDF file
     for (const file of req.files) {
       console.log(`📄 Processing file: ${file.originalname}`);
       
-      const dataBuffer = fs.readFileSync(file.path);
-      const data = await pdfParse(dataBuffer);
+      try {
+        const dataBuffer = fs.readFileSync(file.path);
+        const data = await pdfParse(dataBuffer);
 
-      // Clean the extracted text
-      const cleanedText = data.text
-        .replace(/\s+/g, ' ') // Replace multiple whitespace with single space
-        .replace(/\n\s*\n/g, '\n\n') // Normalize paragraph breaks
-        .trim();
-      
-      console.log(`📝 Extracted ${cleanedText.length} characters from ${file.originalname}`);
+        // Enhanced text cleaning for Georgian PDF parsing issues
+        const cleanedText = data.text
+          // First pass: handle newlines and basic structure
+          .replace(/\n+/g, ' ')                           // Convert all newlines to spaces first
+          .replace(/\s+/g, ' ')                           // Normalize all whitespace
+          
+          // Second pass: fix scattered punctuation (Georgian-specific)
+          .replace(/^[\s\-\.,!?]+/gm, '')                 // Remove leading punctuation on lines
+          .replace(/[\s\-\.,!?]+$/gm, '')                 // Remove trailing punctuation on lines
+          .replace(/\s*[-]+\s*/g, ' ')                    // Clean up scattered dashes
+          .replace(/\s*[\.]{2,}/g, '.')                   // Multiple periods to single
+          .replace(/\s*[,]{2,}/g, ',')                    // Multiple commas to single
+          .replace(/\s*[\.]\s*[,]/g, '.')                 // Period-comma combinations
+          .replace(/\s*[,]\s*[\.]/g, '.')                 // Comma-period combinations
+          
+          // Third pass: fix spacing around punctuation
+          .replace(/\s+([\.!?])/g, '$1')                  // Remove space before sentence endings
+          .replace(/\s+([,;:])/g, '$1')                   // Remove space before punctuation
+          .replace(/([\.!?])([ა-ჰА-Яa-zA-Z])/g, '$1 $2')  // Add space after sentences
+          .replace(/([,;:])([ა-ჰА-Яa-zA-Z])/g, '$1 $2')   // Add space after punctuation
+          
+          // Fourth pass: clean up remaining artifacts
+          .replace(/^\s*[\.!?,;:-]+\s*/g, '')             // Remove punctuation-only beginnings
+          .replace(/\s*[\.!?,;:-]+\s*$/g, '')             // Remove punctuation-only endings
+          .replace(/\s{2,}/g, ' ')                        // Final whitespace normalization
+          .trim();
 
-      // Step 3: Create semantic chunks using LangChain
-      const textChunks = await createSemanticChunks(cleanedText, file.originalname);
+        console.log(`📝 Original text length: ${data.text.length} chars`);
+        console.log(`🧹 Cleaned text length: ${cleanedText.length} chars`);
+        console.log(`📊 Cleaning removed: ${data.text.length - cleanedText.length} chars (${Math.round((data.text.length - cleanedText.length) / data.text.length * 100)}%)`);
+        
+        // Log a sample of cleaned text for debugging
+        console.log(`📋 Sample cleaned text: "${cleanedText.substring(0, 200)}..."`);
+        
+        if (cleanedText.length < data.text.length * 0.5) {
+          console.warn(`⚠️ Warning: Aggressive cleaning removed >50% of text. Original might be heavily corrupted.`);
+        }
+        
+        console.log(`📝 Extracted ${cleanedText.length} characters from ${file.originalname}`);
 
-      // Step 4: Generate embeddings
-      const embeddingVectors = await generateEmbeddingsForChunks(textChunks);
+        if (cleanedText.length < 50) {
+          console.warn(`⚠️ Warning: Very short text extracted from ${file.originalname} (${cleanedText.length} chars)`);
+        }
 
-      // Step 5: Upload to Pinecone
-      await uploadChunksToPinecone(textChunks, embeddingVectors, userId, file.originalname);
+        // Step 3: Create semantic chunks using LangChain
+        const textChunks = await createSemanticChunks(cleanedText);
+        console.log(textChunks[0], textChunks[1], textChunks[2]); // Log first 3 chunks for debugging
 
-      results.push({
-        filename: file.originalname,
-        textLength: cleanedText.length,
-        chunksCreated: textChunks.length,
-        vectorsUploaded: embeddingVectors.length,
-        chunkingMethod: 'semantic',
-        avgChunkSize: Math.round(textChunks.reduce((sum, chunk) => sum + chunk.charCount, 0) / textChunks.length),
-        chunkSizeRange: {
-          min: Math.min(...textChunks.map(c => c.charCount)),
-          max: Math.max(...textChunks.map(c => c.charCount))
-        },
-        status: 'success'
-      });
+        if (textChunks.length === 0) {
+          throw new Error(`No chunks created from ${file.originalname}`);
+        }
 
-      // Clean up temp file
-      fs.unlinkSync(file.path);
-      console.log(`🗑️ Cleaned up temporary file: ${file.path}`);
+        // Step 4: Generate embeddings for semantic chunks
+        const embeddingVectors = await generateEmbeddingsForChunks(textChunks);
+
+        // Step 5: Upload semantic chunks to Pinecone
+        await uploadChunksToPinecone(textChunks, embeddingVectors, userId, file.originalname);
+
+        results.push({
+          filename: file.originalname,
+          textLength: cleanedText.length,
+          chunksCreated: textChunks.length,
+          vectorsUploaded: embeddingVectors.length,
+          averageChunkSize: Math.round(textChunks.reduce((sum, chunk) => sum + chunk.charCount, 0) / textChunks.length),
+          averageWordsPerChunk: Math.round(textChunks.reduce((sum, chunk) => sum + chunk.wordCount, 0) / textChunks.length),
+          chunkingMethod: 'semantic_langchain',
+          status: 'success'
+        });
+
+        console.log(`✅ Successfully processed ${file.originalname}`);
+
+      } catch (fileError) {
+        console.error(`❌ Error processing file ${file.originalname}:`, fileError);
+        results.push({
+          filename: file.originalname,
+          status: 'error',
+          error: fileError.message
+        });
+      } finally {
+        // Clean up temp file
+        try {
+          if (fs.existsSync(file.path)) {
+            fs.unlinkSync(file.path);
+          }
+        } catch (cleanupErr) {
+          console.error(`⚠️ Warning: Could not clean up temp file ${file.path}:`, cleanupErr);
+        }
+      }
     }
 
-    console.log("🎉 All files processed successfully with semantic chunking!");
+    const successfulFiles = results.filter(r => r.status === 'success').length;
+    const failedFiles = results.filter(r => r.status === 'error').length;
+
+    console.log(`🎉 Processing complete! ${successfulFiles} successful, ${failedFiles} failed`);
 
     res.status(200).json({
       success: true,
       message: 'PDF files processed with semantic chunking and indexed successfully',
       results: results,
       totalFiles: req.files.length,
+      successfulFiles: successfulFiles,
+      failedFiles: failedFiles,
+      chunkingMethod: 'semantic_langchain',
       chunkingConfig: {
-        method: 'semantic',
         chunkSize: CHUNK_SIZE,
         chunkOverlap: CHUNK_OVERLAP,
-        separators: SEPARATORS,
+        separators: SEPARATORS
       }
     });
 
   } catch (err) {
-    console.error('❌ Error processing PDF files:', err);
+    console.error('❌ Error in PDF processing pipeline:', err);
     
     // Clean up any remaining temp files
     if (req.files) {
@@ -317,7 +400,6 @@ exports.uploadFiles = async (req, res) => {
         try {
           if (fs.existsSync(file.path)) {
             fs.unlinkSync(file.path);
-            console.log(`🗑️ Cleaned up temp file: ${file.path}`);
           }
         } catch (cleanupErr) {
           console.error('Error cleaning up temp file:', cleanupErr);
@@ -329,38 +411,6 @@ exports.uploadFiles = async (req, res) => {
       success: false,
       error: 'Failed to process PDF files with semantic chunking',
       message: err.message 
-    });
-  }
-};
-
-// Export the search function as well
-exports.search = async (req, res) => {
-  try {
-    const { query, topK = 5 } = req.body;
-    const userId = req.user?._id.toString() || "default_user";
-    
-    if (!query) {
-      return res.status(400).json({
-        success: false,
-        error: 'Query is required'
-      });
-    }
-    
-    const searchResults = await semanticSearch(query, userId, topK);
-    
-    res.status(200).json({
-      success: true,
-      query: query,
-      results: searchResults,
-      resultCount: searchResults.length
-    });
-    
-  } catch (err) {
-    console.error('❌ Error performing search:', err);
-    res.status(500).json({
-      success: false,
-      error: 'Search failed',
-      message: err.message
     });
   }
 };
