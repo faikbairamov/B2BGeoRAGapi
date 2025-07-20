@@ -89,25 +89,50 @@ async function generateEmbeddingsForChunks(textChunks, filename = "") {
   );
   console.log(`✅ [${filename}] Embedding model loaded successfully`);
 
-  const embeddingVectors = [];
   const totalChunks = textChunks.length;
+  const CHUNK_BATCH_SIZE = 5; // Process 5 chunks in parallel to avoid overwhelming the system
+  
+  console.log(`⚡ [${filename}] Starting parallel embedding generation for ${totalChunks} chunks (batches of ${CHUNK_BATCH_SIZE})...`);
 
-  for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
-    if (chunkIndex % 10 === 0 || chunkIndex === totalChunks - 1) {
-      console.log(`⚡ [${filename}] Processing chunk ${chunkIndex + 1} of ${totalChunks}...`);
+  const embeddingVectors = [];
+  
+  // Process chunks in parallel batches
+  for (let batchStart = 0; batchStart < totalChunks; batchStart += CHUNK_BATCH_SIZE) {
+    const batchEnd = Math.min(batchStart + CHUNK_BATCH_SIZE, totalChunks);
+    const currentBatchSize = batchEnd - batchStart;
+    const batchNumber = Math.floor(batchStart / CHUNK_BATCH_SIZE) + 1;
+    const totalBatches = Math.ceil(totalChunks / CHUNK_BATCH_SIZE);
+    
+    console.log(`🔄 [${filename}] Processing embedding batch ${batchNumber}/${totalBatches} (chunks ${batchStart + 1}-${batchEnd})...`);
+    
+    // Create promises for parallel processing of this batch
+    const batchPromises = [];
+    for (let i = batchStart; i < batchEnd; i++) {
+      const chunkPromise = embeddingPipeline(
+        textChunks[i].text,
+        {
+          pooling: "cls",
+          normalize: true,
+        }
+      ).then(output => ({
+        index: i,
+        data: output.data
+      }));
+      batchPromises.push(chunkPromise);
     }
     
-    const embeddingOutput = await embeddingPipeline(
-      textChunks[chunkIndex].text,
-      {
-        pooling: "cls",
-        normalize: true,
-      }
-    );
-    embeddingVectors.push(embeddingOutput.data);
+    // Wait for all chunks in this batch to complete
+    const batchResults = await Promise.all(batchPromises);
+    
+    // Add results to the main array in correct order
+    batchResults.forEach(result => {
+      embeddingVectors[result.index] = result.data;
+    });
+    
+    console.log(`✅ [${filename}] Completed embedding batch ${batchNumber}/${totalBatches} (${currentBatchSize} chunks)`);
   }
 
-  console.log(`✅ [${filename}] Generated ${embeddingVectors.length} embedding vectors`);
+  console.log(`🎉 [${filename}] Generated ${embeddingVectors.length} embedding vectors using parallel processing`);
   return embeddingVectors;
 }
 
