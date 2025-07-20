@@ -10,7 +10,7 @@ const BATCH_SIZE = 100;
 
 // Pinecone Configuration
 const PINECONE_API_KEY = process.env.PINECONE_API_KEY;
-const PINECONE_INDEX_NAME = "georag1";
+const PINECONE_INDEX_NAME = "vectormind";
 const PINECONE_INDEX_REGION = "us-east-1";
 
 // Model Configuration
