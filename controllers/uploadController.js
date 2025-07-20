@@ -6,6 +6,7 @@ const pdfParse = require('pdf-parse');
 
 // Configuration Constants
 const BATCH_SIZE = 100;
+const MAX_CONCURRENT_EMBEDDINGS = 3; // Limit concurrent embedding operations
 
 // Pinecone Configuration
 const PINECONE_API_KEY = process.env.PINECONE_API_KEY;
@@ -21,6 +22,10 @@ const SIMILARITY_METRIC = "cosine";
 const pineconeClient = new Pinecone({
   apiKey: PINECONE_API_KEY,
 });
+
+// Global embedding model instance and semaphore
+let globalEmbeddingPipeline = null;
+let embeddingSemaphore = 0;
 
 // ===== HELPER FUNCTIONS =====
 
@@ -53,6 +58,18 @@ async function ensurePineconeIndexExists() {
   }
 }
 
+async function initializeGlobalEmbeddingModel() {
+  if (!globalEmbeddingPipeline) {
+    console.log(`🧠 Initializing shared embedding model '${EMBEDDING_MODEL_NAME}'...`);
+    globalEmbeddingPipeline = await pipeline(
+      "feature-extraction",
+      EMBEDDING_MODEL_NAME
+    );
+    console.log("✅ Shared embedding model loaded successfully");
+  }
+  return globalEmbeddingPipeline;
+}
+
 async function createTextChunks(
   textContent,
   chunkSize = 500,
@@ -81,34 +98,52 @@ async function createTextChunks(
   return textChunks;
 }
 
-async function generateEmbeddingsForChunks(textChunks, filename = "") {
-  console.log(`🧠 [${filename}] Initializing embedding model '${EMBEDDING_MODEL_NAME}'...`);
-  const embeddingPipeline = await pipeline(
-    "feature-extraction",
-    EMBEDDING_MODEL_NAME
-  );
-  console.log(`✅ [${filename}] Embedding model loaded successfully`);
-
-  const embeddingVectors = [];
-  const totalChunks = textChunks.length;
-
-  for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
-    if (chunkIndex % 10 === 0 || chunkIndex === totalChunks - 1) {
-      console.log(`⚡ [${filename}] Processing chunk ${chunkIndex + 1} of ${totalChunks}...`);
-    }
-    
-    const embeddingOutput = await embeddingPipeline(
-      textChunks[chunkIndex].text,
-      {
-        pooling: "cls",
-        normalize: true,
-      }
-    );
-    embeddingVectors.push(embeddingOutput.data);
+async function waitForEmbeddingSlot(filename) {
+  while (embeddingSemaphore >= MAX_CONCURRENT_EMBEDDINGS) {
+    console.log(`⏳ [${filename}] Waiting for embedding slot (${embeddingSemaphore}/${MAX_CONCURRENT_EMBEDDINGS} active)...`);
+    await new Promise(resolve => setTimeout(resolve, 100));
   }
+  embeddingSemaphore++;
+  console.log(`🔓 [${filename}] Acquired embedding slot (${embeddingSemaphore}/${MAX_CONCURRENT_EMBEDDINGS} active)`);
+}
 
-  console.log(`✅ [${filename}] Generated ${embeddingVectors.length} embedding vectors`);
-  return embeddingVectors;
+function releaseEmbeddingSlot(filename) {
+  embeddingSemaphore--;
+  console.log(`🔒 [${filename}] Released embedding slot (${embeddingSemaphore}/${MAX_CONCURRENT_EMBEDDINGS} active)`);
+}
+
+async function generateEmbeddingsForChunks(textChunks, filename = "") {
+  // Wait for an available embedding slot
+  await waitForEmbeddingSlot(filename);
+  
+  try {
+    console.log(`⚡ [${filename}] Using shared embedding model for ${textChunks.length} chunks...`);
+
+    const embeddingVectors = [];
+    const totalChunks = textChunks.length;
+
+    for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
+      if (chunkIndex % 10 === 0 || chunkIndex === totalChunks - 1) {
+        console.log(`⚡ [${filename}] Processing chunk ${chunkIndex + 1} of ${totalChunks}...`);
+      }
+      
+      const embeddingOutput = await globalEmbeddingPipeline(
+        textChunks[chunkIndex].text,
+        {
+          pooling: "cls",
+          normalize: true,
+        }
+      );
+      embeddingVectors.push(embeddingOutput.data);
+    }
+
+    console.log(`✅ [${filename}] Generated ${embeddingVectors.length} embedding vectors`);
+    return embeddingVectors;
+    
+  } finally {
+    // Always release the slot, even if there's an error
+    releaseEmbeddingSlot(filename);
+  }
 }
 
 async function uploadChunksToPinecone(textChunks, embeddingVectors, userId, filename) {
@@ -161,7 +196,7 @@ async function processFileInParallel(file, userId) {
   console.log(`🚀 [${file.originalname}] Starting parallel processing...`);
   
   try {
-    // Step 1: Parse PDF
+    // Step 1: Parse PDF (parallel)
     console.log(`📄 [${file.originalname}] Reading PDF file...`);
     const dataBuffer = fs.readFileSync(file.path);
     const data = await pdfParse(dataBuffer);
@@ -171,14 +206,14 @@ async function processFileInParallel(file, userId) {
     const cleanedText = data.text.replace(/\s+/g, ' ').trim();
     console.log(`📝 [${file.originalname}] Extracted ${cleanedText.length} characters`);
 
-    // Step 2: Create text chunks
+    // Step 2: Create text chunks (parallel)
     const textChunks = await createTextChunks(cleanedText, 500, file.originalname);
 
-    // Step 3: Generate embeddings
+    // Step 3: Generate embeddings (controlled concurrency)
     console.log(`🧠 [${file.originalname}] Starting embedding generation...`);
     const embeddingVectors = await generateEmbeddingsForChunks(textChunks, file.originalname);
 
-    // Step 4: Upload to Pinecone
+    // Step 4: Upload to Pinecone (parallel)
     console.log(`📤 [${file.originalname}] Starting upload to Pinecone...`);
     await uploadChunksToPinecone(textChunks, embeddingVectors, userId, file.originalname);
 
@@ -226,7 +261,7 @@ async function processFileInParallel(file, userId) {
 exports.uploadFiles = async (req, res) => {
   const overallStartTime = Date.now();
   console.log('='.repeat(60));
-  console.log('🎯 STARTING PARALLEL PDF PROCESSING PIPELINE');
+  console.log('🎯 STARTING OPTIMIZED PARALLEL PDF PROCESSING PIPELINE');
   console.log('='.repeat(60));
   console.log('Headers:', req.headers);
   console.log('Body:', req.body);
@@ -236,14 +271,17 @@ exports.uploadFiles = async (req, res) => {
   try {
     console.log("🚀 Starting PDF processing and RAG pipeline...");
     
-    // Step 1: Ensure Pinecone index exists
+    // Step 1: Initialize shared resources
     await ensurePineconeIndexExists();
+    await initializeGlobalEmbeddingModel();
     
     const userId = req.user?._id.toString() || "default_user"; 
     console.log(`👤 Processing for user: ${userId}`);
 
-    // Step 2: Process all files in parallel
-    console.log(`🔄 Starting parallel processing of ${req.files.length} files...`);
+    // Step 2: Process all files in parallel with controlled concurrency
+    console.log(`🔄 Starting optimized parallel processing of ${req.files.length} files...`);
+    console.log(`⚙️ Max concurrent embeddings: ${MAX_CONCURRENT_EMBEDDINGS}`);
+    
     const processingPromises = req.files.map((file, index) => {
       console.log(`📋 [File ${index + 1}/${req.files.length}] Queued: ${file.originalname}`);
       return processFileInParallel(file, userId);
@@ -262,21 +300,28 @@ exports.uploadFiles = async (req, res) => {
     console.log(`📈 Average time per file: ${(totalProcessingTime / req.files.length).toFixed(2)}s`);
     console.log(`📊 Total chunks created: ${results.reduce((sum, r) => sum + r.chunksCreated, 0)}`);
     console.log(`📊 Total vectors uploaded: ${results.reduce((sum, r) => sum + r.vectorsUploaded, 0)}`);
+    console.log(`🧠 Embedding model instances: 1 (shared)`);
+    console.log(`⚙️ Max concurrent embeddings: ${MAX_CONCURRENT_EMBEDDINGS}`);
     console.log('='.repeat(60));
 
     res.status(200).json({
       success: true,
-      message: 'PDF files processed and indexed successfully in parallel',
+      message: 'PDF files processed and indexed successfully with optimized parallel processing',
       results: results,
       totalFiles: req.files.length,
       totalProcessingTimeSeconds: totalProcessingTime,
       averageTimePerFile: (totalProcessingTime / req.files.length).toFixed(2),
       totalChunksCreated: results.reduce((sum, r) => sum + r.chunksCreated, 0),
-      totalVectorsUploaded: results.reduce((sum, r) => sum + r.vectorsUploaded, 0)
+      totalVectorsUploaded: results.reduce((sum, r) => sum + r.vectorsUploaded, 0),
+      optimizations: {
+        sharedEmbeddingModel: true,
+        maxConcurrentEmbeddings: MAX_CONCURRENT_EMBEDDINGS,
+        parallelFileProcessing: true
+      }
     });
 
   } catch (err) {
-    console.error('❌ Error in parallel processing pipeline:', err);
+    console.error('❌ Error in optimized parallel processing pipeline:', err);
     
     // Clean up any remaining temp files
     if (req.files) {
@@ -299,7 +344,7 @@ exports.uploadFiles = async (req, res) => {
 
     res.status(500).json({ 
       success: false,
-      error: 'Failed to process PDF files in parallel',
+      error: 'Failed to process PDF files in optimized parallel pipeline',
       message: err.message,
       processingTimeSeconds: totalProcessingTime
     });
