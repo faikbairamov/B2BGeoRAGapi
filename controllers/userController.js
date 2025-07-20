@@ -4,13 +4,12 @@ const asyncHandler = require("express-async-handler"); // If not installed, npm 
 // Helper to send JWT token in response
 const sendTokenResponse = (user, statusCode, res) => {
   const token = user.getSignedJwtToken(); // This method should be defined in your userModel
+const daysToExpire = Number(process.env.JWT_COOKIE_EXPIRE) || 7; // fallback to 7 days
 
-  const options = {
-    expires: new Date(
-      Date.now() + process.env.JWT_COOKIE_EXPIRE * 24 * 60 * 60 * 1000
-    ),
-    httpOnly: true,
-  };
+const options = {
+  expires: new Date(Date.now() + daysToExpire * 24 * 60 * 60 * 1000),
+  httpOnly: true,
+};
 
   if (process.env.NODE_ENV === "production") {
     options.secure = true;
