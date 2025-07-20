@@ -4,7 +4,7 @@ const OpenAI = require('openai');
 
 // Configuration Constants (should match your upload controller)
 const PINECONE_API_KEY = process.env.PINECONE_API_KEY;
-const PINECONE_INDEX_NAME = "georag1";
+const PINECONE_INDEX_NAME = "vectormind";
 const EMBEDDING_MODEL_NAME = "Xenova/bge-m3";
 
 // Initialize clients
