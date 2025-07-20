@@ -33,25 +33,28 @@ async function generateQueryEmbedding(queryText) {
 }
 
 async function answerWithGPT4O(question, topChunks) {
+   console.log("topChunks:", topChunks);
   const context = topChunks
-    .map((chunk, index) => `Context ${index + 1}: ${chunk.text}`)
+    .map((chunk, index) => `Context ${index + 1}: ${chunk.fullText}`)
     .join("\n\n");
     
   const prompt = `
 You are an expert assistant. Use ONLY the following context to answer the user's question.
-If the context doesn't contain enough information to answer the question, say so clearly.
 
 ${context}
 
 Question: ${question}
 Answer:`;
 
+
+console.log(`prompt: ${prompt}`);
   const completion = await openai.chat.completions.create({
     model: "gpt-4o",
     messages: [{ role: "user", content: prompt }],
     max_tokens: 512,
     temperature: 0.2,
   });
+  console.log('content, ', completion.choices[0].message.content);
   
   return completion.choices[0].message.content.trim();
 }
