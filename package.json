@@ -9,6 +9,7 @@
     "express": "^5.1.0",
     "express-async-handler": "^1.2.0",
     "jsonwebtoken": "^9.0.2",
+    "langchain": "^0.3.30",
     "mongoose": "^8.16.4",
     "morgan": "^1.10.1",
     "multer": "^2.0.2",
