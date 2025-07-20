@@ -10,7 +10,7 @@ const BATCH_SIZE = 100;
 
 // Pinecone Configuration
 const PINECONE_API_KEY = process.env.PINECONE_API_KEY;
-const PINECONE_INDEX_NAME = "georag";
+const PINECONE_INDEX_NAME = "georag1";
 const PINECONE_INDEX_REGION = "us-east-1";
 
 // Model Configuration
@@ -80,6 +80,14 @@ async function createTextChunks(
   console.log(`✅ Created ${textChunks.length} text chunks of ${chunkSize} characters each`);
   return textChunks;
 }
+
+
+
+
+
+
+
+
 
 async function generateEmbeddingsForChunks(textChunks) {
   console.log(`🧠 Initializing embedding model '${EMBEDDING_MODEL_NAME}'...`);
@@ -162,6 +170,11 @@ async function uploadChunksToPinecone(textChunks, embeddingVectors, userId, file
 // ===== MAIN CONTROLLER =====
 
 exports.uploadFiles = async (req, res) => {
+  console.log('--- /api/query/ UPLOAD REQUEST ---');
+  console.log('Headers:', req.headers);
+  console.log('Body:', req.body);
+  console.log('Files:', req.files);
+
   try {
     console.log("🚀 Starting PDF processing and RAG pipeline...");
     
@@ -169,7 +182,9 @@ exports.uploadFiles = async (req, res) => {
     await ensurePineconeIndexExists();
     
     const results = [];
-    const userId = req.body.userId || "default_user"; // Get userId from request body or default
+    const userId = req.user?._id.toString() || "default_user"; 
+    console.log(userId)
+    // Get userId from request body or default
 
     // Step 2: Process each uploaded PDF file
     for (const file of req.files) {

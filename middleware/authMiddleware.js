@@ -8,16 +8,21 @@ exports.protect = asyncHandler(async (req, res, next) => {
     req.headers.authorization &&
     req.headers.authorization.startsWith("Bearer")
   ) {
+    console.log(req.headers.authorization); // Log the authorization header for debugging
     // Extract token from 'Bearer <token>' format
     try {
       token = req.headers.authorization.split(" ")[1];
 
       // Verify token
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      console.log(decoded)
 
       // Attach user to the request object (without password)
       // The decoded object typically contains { id: user._id, iat: ..., exp: ... }
-      req.user = await User.findById(decoded.id).select("-password");
+      const user = await User.findById(decoded.id)
+
+      console.log(user)
+      req.user = user
 
       if (!req.user) {
         return res
