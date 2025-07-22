@@ -1,4 +1,4 @@
-# B2BGeoRAGapi
+# VectorMind
 
 My teams project for the National AI Hackathon
 
