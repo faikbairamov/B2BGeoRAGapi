@@ -2,11 +2,11 @@
 
 My teams project for the National AI Hackathon
 
-# 🚀 RAG Backend for Document Q&A
+# RAG Backend for Document Q&A
 
 This repository contains the backend for a Retrieval-Augmented Generation (RAG) system designed to answer questions based on your uploaded documents. It leverages **Pinecone** for vector storage, **Hugging Face Transformers.js** for embeddings, and **OpenAI's GPT-4o** for generating answers.
 
-## ✨ Features
+## Features
 
 - **PDF Document Upload & Processing**: Upload PDF files, which are parsed, semantically chunked, and then converted into vector embeddings.
 - **Vector Database Integration (Pinecone)**: Stores document chunks and their embeddings in a Pinecone index for efficient similarity search.
@@ -15,7 +15,7 @@ This repository contains the backend for a Retrieval-Augmented Generation (RAG) 
 - **Scalable & Modular Architecture**: Built with Express.js, featuring separate routes and controllers for better organization.
 - **Environment Variable Configuration**: Securely manages API keys and sensitive information.
 
-## 🛠️ Technologies Used
+## Technologies Used
 
 - **Node.js**: JavaScript runtime.
 - **Express.js**: Web framework for Node.js.
@@ -30,7 +30,7 @@ This repository contains the backend for a Retrieval-Augmented Generation (RAG) 
 - **`uuid`**: For generating unique IDs.
 - **`multer`**: (Implied, but not explicitly shown in `index.js` for file upload handling) A Node.js middleware for handling `multipart/form-data`.
 
-## ⚙️ Installation & Setup
+## Installation & Setup
 
 1.  **Clone the repository:**
 
@@ -67,7 +67,7 @@ This repository contains the backend for a Retrieval-Augmented Generation (RAG) 
 5.  **Pinecone Index (Optional, handled automatically):**
     The `uploadController.js` includes `ensurePineconeIndexExists()` which will automatically create the Pinecone index named `georag1` with a dimension of `1024` (for `bge-m3` embeddings) and `cosine` similarity metric in the `us-east-1` region if it doesn't already exist.
 
-## ▶️ Running the Backend
+## Running the Backend
 
 To start the development server:
 
